@@ -1,9 +1,9 @@
 name: Update dashboard
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "0 15 * * *"   # ежедневно в 15:00 UTC — НБМ и ANRE к этому времени уже публикуют данные на сутки
-  workflow_dispatch: {}     # ручной запуск из вкладки Actions
+    - cron: "0 15 * * *"
 
 permissions:
   contents: write
