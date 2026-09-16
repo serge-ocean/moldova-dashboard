@@ -3,9 +3,12 @@
 import json
 import os
 import re
+import unicodedata
 from datetime import date
 
 import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 
 
 DATA_PATH = os.path.join(
@@ -40,16 +43,29 @@ SOURCES = {
 }
 
 
-def number(value):
+def normalize(text):
     """
-    Преобразует значение таблицы в число.
+    Приводит румынский текст к простому виду:
+    Chișinău -> chisinau
+    joasă -> joasa
+    """
+    text = str(text).lower()
 
-    Поддерживает:
-    14.03
-    14,03
-    "14,03 lei"
-    "356 bani/kWh"
-    """
+    text = unicodedata.normalize(
+        "NFKD",
+        text,
+    )
+
+    text = "".join(
+        char
+        for char in text
+        if not unicodedata.combining(char)
+    )
+
+    return text
+
+
+def number(value):
     if value is None:
         return None
 
@@ -60,13 +76,16 @@ def number(value):
 
     text = str(value).strip()
 
-    if not text or text.lower() in {"nan", "none"}:
+    if not text:
         return None
 
     text = text.replace("\xa0", " ")
     text = text.replace(",", ".")
 
-    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    match = re.search(
+        r"-?\d+(?:\.\d+)?",
+        text,
+    )
 
     if not match:
         return None
@@ -77,35 +96,29 @@ def number(value):
         return None
 
 
-def find_row(table, text):
-    """
-    Ищет строку, содержащую заданный текст.
-    """
-    text = text.lower()
-
-    for _, row in table.iterrows():
-        row_text = " ".join(
-            str(value) for value in row.tolist()
-        ).lower()
-
-        if text in row_text:
-            return row
-
-    return None
-
-
 def load_history():
-    if os.path.exists(DATA_PATH):
-        with open(DATA_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+    if not os.path.exists(DATA_PATH):
+        return {}
 
-    return {}
+    with open(
+        DATA_PATH,
+        "r",
+        encoding="utf-8",
+    ) as f:
+        return json.load(f)
 
 
 def save_history(history):
-    os.makedirs(os.path.dirname(DATA_PATH), exist_ok=True)
+    os.makedirs(
+        os.path.dirname(DATA_PATH),
+        exist_ok=True,
+    )
 
-    with open(DATA_PATH, "w", encoding="utf-8") as f:
+    with open(
+        DATA_PATH,
+        "w",
+        encoding="utf-8",
+    ) as f:
         json.dump(
             history,
             f,
@@ -114,51 +127,81 @@ def save_history(history):
         )
 
 
+def get_html(url):
+    response = requests.get(
+        url,
+        timeout=30,
+        headers={
+            "User-Agent": "Mozilla/5.0"
+        },
+    )
+
+    response.raise_for_status()
+
+    return response.text
+
+
 def fetch_water():
     """
-    Apă-Canal Chişinău.
+    Ищем строку S.A. "Apă-Canal Chişinău"
+    непосредственно в HTML.
 
-    Бытовые потребители:
-    вода = 14.03 lei/m³
-    канализация = 6.63 lei/m³
+    Для неё:
+    14.03 = вода для бытовых потребителей
+    6.63  = канализация для бытовых потребителей
 
-    Итого = 20.66 lei/m³
+    Итог: 20.66 lei/m³.
     """
 
-    tables = pd.read_html(SOURCES["water"]["url"])
+    html = get_html(
+        SOURCES["water"]["url"]
+    )
 
-    for table in tables:
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
 
-        row = find_row(table, "Apă-Canal Chişinău")
+    target = "apa-canal chisinau"
 
-        if row is None:
-            row = find_row(table, "Apă-Canal Chișinău")
+    for row in soup.find_all("tr"):
 
-        if row is None:
+        text = normalize(
+            row.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        if target not in text:
             continue
+
+        print(
+            f"[water] найдена строка: {text}"
+        )
 
         values = []
 
-        for value in row.tolist():
+        for value in re.findall(
+            r"\d+(?:[.,]\d+)?",
+            text,
+        ):
             n = number(value)
 
             if n is not None:
                 values.append(n)
 
         print(
-            f"[water] найден оператор, числа: {values}"
+            f"[water] числа: {values}"
         )
 
-        # Реальная структура строки ANRE:
-        # 1 = номер строки
-        # 14.03 = вода
-        # 14.03 = технологическая вода
-        # 6.63 = канализация для бытовых потребителей
-        # 10.16 = канализация для небытовых
-        #
-        # Поэтому:
-        # values[1] = 14.03
-        # values[3] = 6.63
+        # Ожидаем:
+        # 1
+        # 14.03
+        # 14.03
+        # 6.63
+        # 10.16
+        # ...
 
         if len(values) >= 4:
 
@@ -178,138 +221,190 @@ def fetch_water():
 
             return result
 
-    print("[water] значение не найдено")
+    print(
+        "[water] Apă-Canal Chişinău "
+        "не найден"
+    )
 
     return None
 
 
 def fetch_electricity():
     """
-    Premier Energy, универсальная услуга,
-    низкое напряжение.
+    Ищем именно:
 
-    Тариф:
-    356 bani/kWh = 3.56 lei/kWh без НДС.
+    Furnizarea energiei electrice
+    ... serviciul universal
+
+    -> Premier Energy
+    -> tensiune joasă
+    -> 356 bani/kWh
+
+    Не берём тариф последней опции 371.
     """
 
-    tables = pd.read_html(
+    html = get_html(
         SOURCES["electricity"]["url"]
     )
 
-    for table in tables:
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
 
-        print(
-            f"[electricity] проверяем таблицу "
-            f"{table.shape}"
+    universal_section = False
+    premier_energy = False
+
+    for row in soup.find_all("tr"):
+
+        text = row.get_text(
+            " ",
+            strip=True,
         )
 
-        # Ищем строку с Premier Energy.
-        premier_index = None
+        normalized = normalize(text)
 
-        for index, row in table.iterrows():
+        print(
+            f"[electricity] строка: {text}"
+        )
 
-            text = " ".join(
-                str(value)
-                for value in row.tolist()
-            ).lower()
+        # Начало секции универсальной услуги.
+        if (
+            "prestarea serviciului universal"
+            in normalized
+        ):
+            universal_section = True
+            premier_energy = False
 
-            if (
-                "premier energy" in text
-                and "tensiune" not in text
-            ):
-                premier_index = index
+            print(
+                "[electricity] "
+                "найдена секция универсальной услуги"
+            )
 
-                print(
-                    f"[electricity] найден Premier Energy: "
-                    f"{text}"
+            continue
+
+        # Начало секции последней опции.
+        if "ultima optiune" in normalized:
+
+            universal_section = False
+            premier_energy = False
+
+            print(
+                "[electricity] "
+                "секция последней опции пропущена"
+            )
+
+            continue
+
+        if not universal_section:
+            continue
+
+        if (
+            "premier energy"
+            in normalized
+        ):
+
+            premier_energy = True
+
+            print(
+                "[electricity] "
+                "найден Premier Energy"
+            )
+
+            # Иногда Premier Energy
+            # и строка тарифа находятся
+            # в одной HTML-строке.
+            if "tensiune joasa" in normalized:
+
+                values = [
+                    number(x)
+                    for x in re.findall(
+                        r"\d+(?:[.,]\d+)?",
+                        text,
+                    )
+                ]
+
+                values = [
+                    x
+                    for x in values
+                    if x is not None
+                ]
+
+                if values:
+
+                    bani = values[0]
+
+                    result = round(
+                        bani / 100,
+                        2,
+                    )
+
+                    print(
+                        f"[electricity] "
+                        f"{bani} bani/kWh = "
+                        f"{result} lei/kWh"
+                    )
+
+                    return result
+
+            continue
+
+        if (
+            premier_energy
+            and "tensiune joasa"
+            in normalized
+        ):
+
+            values = [
+                number(x)
+                for x in re.findall(
+                    r"\d+(?:[.,]\d+)?",
+                    text,
                 )
+            ]
 
-                break
-
-        if premier_index is None:
-            continue
-
-        # Получаем позицию строки Premier Energy.
-        row_positions = list(table.index)
-
-        try:
-            start = row_positions.index(
-                premier_index
-            )
-        except ValueError:
-            continue
-
-        # Ищем следующие строки после Premier Energy.
-        for position in row_positions[start + 1:]:
-
-            row = table.loc[position]
-
-            text = " ".join(
-                str(value)
-                for value in row.tolist()
-            )
-
-            text_lower = text.lower()
-
-            if "tensiune joasă" not in text_lower:
-                continue
-
-            print(
-                f"[electricity] найдена строка "
-                f"tensiune joasă: {text}"
-            )
-
-            values = []
-
-            for value in row.tolist():
-
-                n = number(value)
-
-                if n is not None:
-                    values.append(n)
-
-            print(
-                f"[electricity] числа: {values}"
-            )
-
-            if not values:
-                continue
-
-            # В строке может быть:
-            # 356 = обычный тариф
-            # 375 = дневной тариф
-            # 294 = ночной тариф
-            #
-            # Берём первый тариф.
-
-            bani = values[0]
-
-            result = round(
-                bani / 100,
-                2,
-            )
+            values = [
+                x
+                for x in values
+                if x is not None
+            ]
 
             print(
                 f"[electricity] "
-                f"{bani} bani/kWh = "
-                f"{result} lei/kWh"
+                f"низкое напряжение, "
+                f"числа: {values}"
             )
 
-            return result
+            if values:
+
+                bani = values[0]
+
+                result = round(
+                    bani / 100,
+                    2,
+                )
+
+                print(
+                    f"[electricity] "
+                    f"{bani} bani/kWh = "
+                    f"{result} lei/kWh"
+                )
+
+                return result
 
     print(
-        "[electricity] значение не найдено"
+        "[electricity] "
+        "тариф не найден"
     )
 
     return None
 
 
 def fetch_generic(cfg):
-    """
-    Общий поиск для отопления и газа.
-    """
 
-    tables = pd.read_html(cfg["url"])
+    tables = pd.read_html(
+        cfg["url"]
+    )
 
     for table in tables:
 
@@ -328,7 +423,9 @@ def fetch_generic(cfg):
 
         row_indices = mask.any(axis=1)
 
-        for row_idx in table.index[row_indices]:
+        for row_idx in table.index[
+            row_indices
+        ]:
 
             row = table.loc[row_idx]
 
@@ -363,7 +460,7 @@ def main():
 
     history = load_history()
 
-    today_str = date.today().isoformat()
+    today = date.today().isoformat()
 
     changed = False
 
@@ -381,10 +478,10 @@ def main():
                 cfg,
             )
 
-        except Exception as e:
+        except Exception as error:
 
             print(
-                f"[{key}] ошибка: {e}"
+                f"[{key}] ОШИБКА: {error}"
             )
 
             continue
@@ -393,7 +490,7 @@ def main():
 
             print(
                 f"[{key}] "
-                f"значение не найдено"
+                "значение не найдено"
             )
 
             continue
@@ -416,7 +513,7 @@ def main():
 
             history[key].append(
                 {
-                    "date": today_str,
+                    "date": today,
                     "value": value,
                     "unit": cfg["unit"],
                 }
