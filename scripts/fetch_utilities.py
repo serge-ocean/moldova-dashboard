@@ -45,10 +45,11 @@ SOURCES = {
 
 def normalize(text):
     """
-    Приводит румынский текст к простому виду:
+    Убирает регистр и диакритику:
     Chișinău -> chisinau
     joasă -> joasa
     """
+
     text = str(text).lower()
 
     text = unicodedata.normalize(
@@ -66,12 +67,18 @@ def normalize(text):
 
 
 def number(value):
+    """
+    Преобразует строку/ячейку в число.
+    """
+
     if value is None:
         return None
 
     if isinstance(value, (int, float)):
+
         if pd.isna(value):
             return None
+
         return float(value)
 
     text = str(value).strip()
@@ -79,8 +86,15 @@ def number(value):
     if not text:
         return None
 
-    text = text.replace("\xa0", " ")
-    text = text.replace(",", ".")
+    text = text.replace(
+        "\xa0",
+        " ",
+    )
+
+    text = text.replace(
+        ",",
+        ".",
+    )
 
     match = re.search(
         r"-?\d+(?:\.\d+)?",
@@ -91,12 +105,15 @@ def number(value):
         return None
 
     try:
-        return float(match.group(0))
+        return float(
+            match.group(0)
+        )
     except ValueError:
         return None
 
 
 def load_history():
+
     if not os.path.exists(DATA_PATH):
         return {}
 
@@ -105,10 +122,12 @@ def load_history():
         "r",
         encoding="utf-8",
     ) as f:
+
         return json.load(f)
 
 
 def save_history(history):
+
     os.makedirs(
         os.path.dirname(DATA_PATH),
         exist_ok=True,
@@ -119,6 +138,7 @@ def save_history(history):
         "w",
         encoding="utf-8",
     ) as f:
+
         json.dump(
             history,
             f,
@@ -128,11 +148,17 @@ def save_history(history):
 
 
 def get_html(url):
+
     response = requests.get(
         url,
         timeout=30,
         headers={
-            "User-Agent": "Mozilla/5.0"
+            "User-Agent": (
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "Chrome/140 Safari/537.36"
+            )
         },
     )
 
@@ -143,13 +169,19 @@ def get_html(url):
 
 def fetch_water():
     """
-    Apă-Canal Chișinău.
+    Извлекает тарифы Apă-Canal Chișinău
+    непосредственно из таблицы ANRE.
 
-    Извлекает тарифы непосредственно со страницы ANRE:
-    первое число после названия оператора = вода для бытовых потребителей
-    третье число = канализация для бытовых потребителей
+    В строке оператора находятся тарифы:
 
-    Затем складывает их.
+    - вода для бытовых потребителей;
+    - вода для других категорий;
+    - канализация для бытовых потребителей;
+    - канализация для небытовых потребителей;
+    - другие тарифы.
+
+    Берём первый и третий тарифных показателя.
+    Никаких конкретных значений в коде нет.
     """
 
     html = get_html(
@@ -170,44 +202,70 @@ def fetch_water():
 
         normalized = normalize(text)
 
-        if "apa-canal chisinau" not in normalized:
+        if (
+            "apa-canal chisinau"
+            not in normalized
+        ):
             continue
 
         print(
-            f"[water] найдена строка: {text}"
+            "[water] найден оператор:"
         )
 
-        # Берём числа непосредственно из найденной строки.
-        numbers = re.findall(
-            r"\d+(?:[.,]\d+)?",
-            text,
+        print(text)
+
+        # Сначала получаем содержимое
+        # отдельных ячеек.
+        cells = row.find_all(
+            ["td", "th"]
         )
 
-        values = []
+        numeric_values = []
 
-        for value in numbers:
-            n = number(value)
+        for cell in cells:
 
-            if n is not None:
-                values.append(n)
+            cell_text = cell.get_text(
+                " ",
+                strip=True,
+            )
+
+            value = number(
+                cell_text
+            )
+
+            if value is not None:
+                numeric_values.append(
+                    value
+                )
 
         print(
-            f"[water] извлечённые числа: {values}"
+            f"[water] числа из ячеек: "
+            f"{numeric_values}"
         )
 
-        # В начале строки есть номер оператора "1".
-        # Поэтому после него:
+        # Первая цифра обычно является
+        # номером строки (1).
         #
-        # values[1] = тариф воды для бытовых
-        # values[2] = тариф воды второй категории
-        # values[3] = канализация для бытовых
+        # После неё идут тарифы.
         #
-        # Нам нужны values[1] и values[3].
+        # Поэтому отбрасываем целочисленный
+        # номер строки, если он присутствует.
 
-        if len(values) >= 4:
+        tariff_values = [
+            value
+            for value in numeric_values
+            if value != int(value)
+        ]
 
-            water = values[1]
-            sewage = values[3]
+        print(
+            f"[water] тарифные значения: "
+            f"{tariff_values}"
+        )
+
+        if len(tariff_values) >= 3:
+
+            water = tariff_values[0]
+            sewage = tariff_values[2]
 
             result = round(
                 water + sewage,
@@ -222,20 +280,35 @@ def fetch_water():
 
             return result
 
+        print(
+            "[water] недостаточно "
+            "тарифных значений"
+        )
+
     print(
         "[water] оператор не найден"
     )
 
     return None
-    
+
+
 def fetch_electricity():
     """
     Premier Energy.
-    Универсальная услуга.
-    Низкое напряжение.
 
-    Число извлекается непосредственно
-    из строки ANRE.
+    Ищем именно секцию:
+
+    Furnizarea energiei electrice...
+    privind prestarea serviciului universal
+
+    Затем:
+    Premier Energy
+    -> tensiune joasă
+
+    Из строки tensiune joasă
+    извлекаем первый тариф.
+
+    Никакого 356 в коде нет.
     """
 
     html = get_html(
@@ -259,9 +332,12 @@ def fetch_electricity():
             strip=True,
         )
 
-        normalized = normalize(text)
+        normalized = normalize(
+            text
+        )
 
-        # Начало нужной секции.
+        # Находим начало секции
+        # универсальной услуги.
         if (
             "furnizarea energiei electrice"
             in normalized
@@ -274,13 +350,14 @@ def fetch_electricity():
 
             print(
                 "[electricity] "
-                "найдена секция универсальной услуги"
+                "найдена секция "
+                "универсальной услуги"
             )
 
             continue
 
-        # Следующая секция — последняя опция.
-        # После неё нам искать уже не нужно.
+        # Дошли до секции
+        # последней опции.
         if (
             in_universal_section
             and "ultima optiune"
@@ -289,7 +366,8 @@ def fetch_electricity():
 
             print(
                 "[electricity] "
-                "достигнута секция последней опции"
+                "достигнут конец "
+                "нужной секции"
             )
 
             break
@@ -297,7 +375,7 @@ def fetch_electricity():
         if not in_universal_section:
             continue
 
-        # Наш оператор.
+        # Нашли Premier Energy.
         if (
             "premier energy"
             in normalized
@@ -310,21 +388,33 @@ def fetch_electricity():
                 "найден Premier Energy"
             )
 
-            # В некоторых структурах название оператора
-            # может находиться в той же строке,
-            # что и тариф.
-            if "tensiune joasa" in normalized:
+            # Иногда название оператора
+            # и тарифная строка находятся
+            # в одной строке.
+            if (
+                "tensiune joasa"
+                in normalized
+            ):
 
-                match = re.search(
-                    r"tensiune\s+joasa\s+([0-9]+(?:[.,][0-9]+)?)",
-                    normalized,
-                )
+                values = []
 
-                if match:
+                for cell in row.find_all(
+                    ["td", "th"]
+                ):
 
-                    bani = number(
-                        match.group(1)
+                    value = number(
+                        cell.get_text(
+                            " ",
+                            strip=True,
+                        )
                     )
+
+                    if value is not None:
+                        values.append(value)
+
+                if values:
+
+                    bani = values[0]
 
                     result = round(
                         bani / 100,
@@ -333,7 +423,8 @@ def fetch_electricity():
 
                     print(
                         f"[electricity] "
-                        f"извлечено: {bani} bani/kWh"
+                        f"извлечено: "
+                        f"{bani} bani/kWh"
                     )
 
                     return result
@@ -343,35 +434,61 @@ def fetch_electricity():
         if not premier_found:
             continue
 
-        # Ищем именно низкое напряжение
-        # после Premier Energy.
-        if "tensiune joasa" in normalized:
+        # Ищем строку:
+        # tensiune joasă
+        if (
+            "tensiune joasa"
+            not in normalized
+        ):
+            continue
 
-            match = re.search(
-                r"tensiune\s+joasa\s+([0-9]+(?:[.,][0-9]+)?)",
-                normalized,
+        print(
+            "[electricity] "
+            f"найдена строка: {text}"
+        )
+
+        values = []
+
+        # Берём числа из отдельных
+        # ячеек таблицы.
+        for cell in row.find_all(
+            ["td", "th"]
+        ):
+
+            value = number(
+                cell.get_text(
+                    " ",
+                    strip=True,
+                )
             )
 
-            if match:
+            if value is not None:
+                values.append(value)
 
-                bani = number(
-                    match.group(1)
-                )
+        print(
+            f"[electricity] "
+            f"числа строки: {values}"
+        )
 
-                if bani is None:
-                    continue
+        if not values:
+            continue
 
-                result = round(
-                    bani / 100,
-                    2,
-                )
+        # Первый тариф — основной
+        # регулируемый тариф.
+        bani = values[0]
 
-                print(
-                    f"[electricity] "
-                    f"извлечено: {bani} bani/kWh"
-                )
+        result = round(
+            bani / 100,
+            2,
+        )
 
-                return result
+        print(
+            f"[electricity] "
+            f"{bani} bani/kWh = "
+            f"{result} lei/kWh"
+        )
+
+        return result
 
     print(
         "[electricity] "
@@ -381,7 +498,73 @@ def fetch_electricity():
     return None
 
 
-def fetch_value(key, cfg):
+def fetch_generic(cfg):
+    """
+    Общий парсер для отопления и газа.
+    """
+
+    tables = pd.read_html(
+        cfg["url"]
+    )
+
+    for table in tables:
+
+        table_str = table.astype(
+            str
+        )
+
+        mask = table_str.apply(
+            lambda column: column.str.contains(
+                cfg["operator_match"],
+                na=False,
+                regex=False,
+            )
+        )
+
+        if not mask.any().any():
+            continue
+
+        row_indices = mask.any(
+            axis=1
+        )
+
+        for row_idx in table.index[
+            row_indices
+        ]:
+
+            row = table.loc[row_idx]
+
+            for col_name, value in row.items():
+
+                if (
+                    cfg["value_col_match"].lower()
+                    not in str(
+                        col_name
+                    ).lower()
+                ):
+                    continue
+
+                result = number(
+                    value
+                )
+
+                if result is not None:
+
+                    print(
+                        f"[generic] "
+                        f"{result} "
+                        f"{cfg['unit']}"
+                    )
+
+                    return result
+
+    return None
+
+
+def fetch_value(
+    key,
+    cfg,
+):
 
     if key == "water":
         return fetch_water()
@@ -389,7 +572,9 @@ def fetch_value(key, cfg):
     if key == "electricity":
         return fetch_electricity()
 
-    return fetch_generic(cfg)
+    return fetch_generic(
+        cfg
+    )
 
 
 def main():
@@ -403,9 +588,15 @@ def main():
     for key, cfg in SOURCES.items():
 
         print("")
-        print("=" * 60)
-        print(f"[{key}] начинаю поиск")
-        print("=" * 60)
+        print(
+            "=" * 60
+        )
+        print(
+            f"[{key}] начинаю поиск"
+        )
+        print(
+            "=" * 60
+        )
 
         try:
 
@@ -417,7 +608,8 @@ def main():
         except Exception as error:
 
             print(
-                f"[{key}] ОШИБКА: {error}"
+                f"[{key}] ОШИБКА: "
+                f"{error}"
             )
 
             continue
@@ -460,7 +652,8 @@ def main():
             print(
                 f"[{key}] "
                 f"новое значение: "
-                f"{value} {cfg['unit']}"
+                f"{value} "
+                f"{cfg['unit']}"
             )
 
         else:
@@ -468,23 +661,28 @@ def main():
             print(
                 f"[{key}] "
                 f"без изменений: "
-                f"{value} {cfg['unit']}"
+                f"{value} "
+                f"{cfg['unit']}"
             )
 
     if changed:
 
-        save_history(history)
+        save_history(
+            history
+        )
 
         print("")
         print(
-            "[OK] utilities.json обновлён"
+            "[OK] utilities.json "
+            "обновлён"
         )
 
     else:
 
         print("")
         print(
-            "[INFO] новых изменений нет"
+            "[INFO] новых изменений "
+            "нет"
         )
 
 
