@@ -12,5 +12,19 @@
       "value": 18.798,
       "unit": "lei/m³"
     }
+  ],
+  "water": [
+    {
+      "date": "2026-09-16",
+      "value": 20.66,
+      "unit": "lei/m³"
+    }
+  ],
+  "electricity": [
+    {
+      "date": "2026-09-16",
+      "value": 3.56,
+      "unit": "lei/kWh"
+    }
   ]
 }

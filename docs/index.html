@@ -54,7 +54,13 @@
       
     </div></div>
   <h2>ЖКХ</h2>
-  <div class="grid"><div class="card"><h3>Вода / канализация</h3><p class="muted">нет данных</p></div>
+  <div class="grid">
+    <div class="card">
+      <h3>Вода / канализация</h3>
+      <p class="value">20.66 <span class="unit">lei/m³</span></p>
+      <p class="muted">тариф действует с 2026-09-16</p>
+      <canvas id="chart-water"></canvas>
+    </div>
     <div class="card">
       <h3>Отопление (Termoelectrica)</h3>
       <p class="value">2020.0 <span class="unit">lei/Gcal</span></p>
@@ -66,7 +72,13 @@
       <p class="value">18.798 <span class="unit">lei/m³</span></p>
       <p class="muted">тариф действует с 2026-09-16</p>
       <canvas id="chart-gas"></canvas>
-    </div><div class="card"><h3>Электричество</h3><p class="muted">нет данных</p></div></div>
+    </div>
+    <div class="card">
+      <h3>Электричество</h3>
+      <p class="value">3.56 <span class="unit">lei/kWh</span></p>
+      <p class="muted">тариф действует с 2026-09-16</p>
+      <canvas id="chart-electricity"></canvas>
+    </div></div>
   <footer>Обновлено: 2026-09-16</footer>
   <script>
     new Chart(document.getElementById("chart-USD"), {
@@ -89,6 +101,11 @@
       data: { labels: ["2026-09-16"], datasets: [{ data: [35.53], borderColor: "#5fd97a", backgroundColor: "transparent", tension: 0.2, pointRadius: 0 }] },
       options: { plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } }
     });
+    new Chart(document.getElementById("chart-water"), {
+      type: "line",
+      data: { labels: ["2026-09-16"], datasets: [{ data: [20.66], borderColor: "#5fd97a", backgroundColor: "transparent", tension: 0.2, pointRadius: 0 }] },
+      options: { plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } }
+    });
     new Chart(document.getElementById("chart-heating"), {
       type: "line",
       data: { labels: ["2026-09-16"], datasets: [{ data: [2020.0], borderColor: "#5fd97a", backgroundColor: "transparent", tension: 0.2, pointRadius: 0 }] },
@@ -97,6 +114,11 @@
     new Chart(document.getElementById("chart-gas"), {
       type: "line",
       data: { labels: ["2026-09-16"], datasets: [{ data: [18.798], borderColor: "#5fd97a", backgroundColor: "transparent", tension: 0.2, pointRadius: 0 }] },
+      options: { plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } }
+    });
+    new Chart(document.getElementById("chart-electricity"), {
+      type: "line",
+      data: { labels: ["2026-09-16"], datasets: [{ data: [3.56], borderColor: "#5fd97a", backgroundColor: "transparent", tension: 0.2, pointRadius: 0 }] },
       options: { plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { display: false } } }
     });</script>
 </body>
