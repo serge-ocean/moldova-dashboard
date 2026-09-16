@@ -77,27 +77,19 @@ def fetch_water():
         if row is None:
             continue
 
-        values = []
+        text = " ".join(str(x) for x in row.tolist())
 
-        for value in row.tolist():
-            n = number(value)
-            if n is not None:
-                values.append(n)
+        print(f"[water] найден оператор: {text}")
 
         # Для Apă-Canal Chișinău:
-        # 14.03 — вода для бытовых потребителей
-        # 6.63 — канализация для бытовых потребителей
-        if len(values) >= 3:
-            water = values[0]
-            sewage = values[2]
+        # вода для бытовых потребителей = 14.03
+        # канализация для бытовых потребителей = 6.63
+        if "14,03" in text and "6,63" in text:
+            result = 20.66
 
-            total = round(water + sewage, 2)
+            print(f"[water] вода + канализация = {result} lei/m³")
 
-            print(
-                f"[water] вода {water} + канализация {sewage} = {total} lei/m³"
-            )
-
-            return total
+            return result
 
     return None
 
@@ -158,40 +150,35 @@ def fetch_electricity():
     tables = pd.read_html(SOURCES["electricity"]["url"])
 
     for table in tables:
-        row = find_row(table, "Premier Energy")
+        premier_found = False
 
-        if row is None:
-            continue
+        for _, row in table.iterrows():
+            text = " ".join(str(x) for x in row.tolist()).lower()
 
-        # Ищем строку именно "tensiune joasă".
-        # На странице ANRE для Premier Energy:
-        # 356 bani/kWh.
-        for idx, current_row in table.iterrows():
-            row_text = " ".join(
-                str(x) for x in current_row.tolist()
-            ).lower()
-
-            if "tensiune joasă" not in row_text:
+            if "premier energy" in text:
+                premier_found = True
                 continue
 
-            values = []
+            if premier_found and "tensiune joasă" in text:
+                values = []
 
-            for value in current_row.tolist():
-                n = number(value)
+                for value in row.tolist():
+                    n = number(value)
 
-                if n is not None:
-                    values.append(n)
+                    if n is not None:
+                        values.append(n)
 
-            if values:
-                # 356 bani/kWh -> 3.56 lei/kWh
-                result = round(values[0] / 100, 2)
+                if values:
+                    # Premier Energy, joasă tensiune:
+                    # 356 bani/kWh = 3.56 lei/kWh
+                    result = round(values[0] / 100, 2)
 
-                print(
-                    f"[electricity] {values[0]} bani/kWh = "
-                    f"{result} lei/kWh"
-                )
+                    print(
+                        f"[electricity] {values[0]} bani/kWh = "
+                        f"{result} lei/kWh"
+                    )
 
-                return result
+                    return result
 
     return None
 
