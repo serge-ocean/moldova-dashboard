@@ -1,109 +1,278 @@
 #!/usr/bin/env python3
-"""
-Тянет действующие тарифы ЖКХ, утверждённые ANRE, и дописывает точку
-в data/utilities.json — но только если значение реально изменилось
-(тарифы обновляются раз в несколько месяцев, а не каждый день).
 
-ВАЖНО: таблицы ANRE для газа и электричества содержат много операторов
-и категорий потребителей (напряжение, тип услуги и т.д.). Значения
-operator_match / value_col_match ниже подобраны и проверены вручную
-для отопления (Termoelectrica) и воды (Apă-Canal Chişinău) — сентябрь 2026.
-Для газа и электричества это первое приближение — после первого прогона
-сверь вывод скрипта с реальными строками таблицы на сайте ANRE и поправь
-при необходимости (ссылки на страницы — в SOURCES ниже).
-"""
 import json
 import os
+import re
 from datetime import date
+
 import pandas as pd
 
-DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "utilities.json")
+
+DATA_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "data", "utilities.json"
+)
 
 SOURCES = {
-    "heating": {
-        "url": "https://anre.md/energie-termica-3-247",
-        "operator_match": "Termoelectrica",
-        "value_col_match": "Gcal",
-        "unit": "lei/Gcal",
-    },
     "water": {
         "url": "https://anre.md/alimentare-cu-apa-si-canalizare-3-283",
-        "operator_match": "Apă-Canal Chişinău",
-        "value_col_match": "casnici",  # тариф для бытовых потребителей
-        "unit": "lei/m3",
+        "unit": "lei/m³",
+    },
+    "heating": {
+        "url": "https://anre.md/energie-termica-3-247",
+        "unit": "lei/Gcal",
     },
     "gas": {
         "url": "https://anre.md/gaze-naturale-3-205",
-        "operator_match": "Premier Energy",  # ПРОВЕРИТЬ после первого запуска
-        "value_col_match": "casnici",
-        "unit": "lei/m3",
+        "unit": "lei/m³",
     },
     "electricity": {
         "url": "https://anre.md/energie-electrica-3-290",
-        "operator_match": "Premier Energy",  # ПРОВЕРИТЬ: нужна строка furnizare serviciu universal / tensiune joasă
-        "value_col_match": "joasă",
-        "unit": "bani/kWh",
+        "unit": "lei/kWh",
     },
 }
 
 
-def fetch_value(cfg):
-    tables = pd.read_html(cfg["url"])
-    for table in tables:
-        table = table.astype(str)
-        mask = table.apply(lambda col: col.str.contains(cfg["operator_match"], na=False, regex=False))
-        if mask.any().any():
-            row_idx = mask.any(axis=1).idxmax()
-            row = table.loc[row_idx]
-            for col_name, val in row.items():
-                if cfg["value_col_match"].lower() in str(col_name).lower():
-                    try:
-                        return float(str(val).replace(",", ".").replace(" ", ""))
-                    except ValueError:
-                        continue
+def number(value):
+    """Преобразует строку с числом ANRE в float."""
+    if value is None:
+        return None
+
+    s = str(value).strip()
+    s = s.replace("\xa0", " ")
+    s = s.replace(",", ".")
+
+    s = re.sub(r"[^\d.]", "", s)
+
+    if not s:
+        return None
+
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def find_row(table, text):
+    """Возвращает строку таблицы, содержащую указанный текст."""
+    text = text.lower()
+
+    for idx, row in table.iterrows():
+        row_text = " ".join(str(x) for x in row.tolist()).lower()
+
+        if text in row_text:
+            return row
+
     return None
+
+
+def fetch_water():
+    tables = pd.read_html(SOURCES["water"]["url"])
+
+    for table in tables:
+        row = find_row(table, "Apă-Canal Chişinău")
+
+        if row is None:
+            row = find_row(table, "Apă-Canal Chișinău")
+
+        if row is None:
+            continue
+
+        values = []
+
+        for value in row.tolist():
+            n = number(value)
+            if n is not None:
+                values.append(n)
+
+        # Для Apă-Canal Chișinău:
+        # 14.03 — вода для бытовых потребителей
+        # 6.63 — канализация для бытовых потребителей
+        if len(values) >= 3:
+            water = values[0]
+            sewage = values[2]
+
+            total = round(water + sewage, 2)
+
+            print(
+                f"[water] вода {water} + канализация {sewage} = {total} lei/m³"
+            )
+
+            return total
+
+    return None
+
+
+def fetch_heating():
+    tables = pd.read_html(SOURCES["heating"]["url"])
+
+    for table in tables:
+        row = find_row(table, "Termoelectrica")
+
+        if row is None:
+            continue
+
+        for value in row.tolist():
+            n = number(value)
+
+            if n is not None and 1000 <= n <= 5000:
+                print(f"[heating] {n} lei/Gcal")
+                return n
+
+    return None
+
+
+def fetch_gas():
+    tables = pd.read_html(SOURCES["gas"]["url"])
+
+    for table in tables:
+        row = find_row(table, "Energocom")
+
+        if row is None:
+            continue
+
+        values = []
+
+        for value in row.tolist():
+            n = number(value)
+
+            if n is not None:
+                values.append(n)
+
+        # Для низкого давления:
+        # 18 798 lei / 1000 m³
+        if len(values) >= 5:
+            low_pressure = values[-1]
+            result = round(low_pressure / 1000, 3)
+
+            print(
+                f"[gas] {low_pressure} lei/1000 m³ = "
+                f"{result} lei/m³"
+            )
+
+            return result
+
+    return None
+
+
+def fetch_electricity():
+    tables = pd.read_html(SOURCES["electricity"]["url"])
+
+    for table in tables:
+        row = find_row(table, "Premier Energy")
+
+        if row is None:
+            continue
+
+        # Ищем строку именно "tensiune joasă".
+        # На странице ANRE для Premier Energy:
+        # 356 bani/kWh.
+        for idx, current_row in table.iterrows():
+            row_text = " ".join(
+                str(x) for x in current_row.tolist()
+            ).lower()
+
+            if "tensiune joasă" not in row_text:
+                continue
+
+            values = []
+
+            for value in current_row.tolist():
+                n = number(value)
+
+                if n is not None:
+                    values.append(n)
+
+            if values:
+                # 356 bani/kWh -> 3.56 lei/kWh
+                result = round(values[0] / 100, 2)
+
+                print(
+                    f"[electricity] {values[0]} bani/kWh = "
+                    f"{result} lei/kWh"
+                )
+
+                return result
+
+    return None
+
+
+FETCHERS = {
+    "water": fetch_water,
+    "heating": fetch_heating,
+    "gas": fetch_gas,
+    "electricity": fetch_electricity,
+}
 
 
 def load_history():
     if os.path.exists(DATA_PATH):
         with open(DATA_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
+
     return {}
 
 
 def save_history(history):
     os.makedirs(os.path.dirname(DATA_PATH), exist_ok=True)
+
     with open(DATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+        json.dump(
+            history,
+            f,
+            ensure_ascii=False,
+            indent=2
+        )
 
 
 def main():
     history = load_history()
-    today_str = date.today().isoformat()
+    today = date.today().isoformat()
+
     changed = False
 
-    for key, cfg in SOURCES.items():
+    for key, fetcher in FETCHERS.items():
         try:
-            value = fetch_value(cfg)
+            value = fetcher()
+
         except Exception as e:
             print(f"[{key}] ошибка: {e}")
             continue
 
         if value is None:
-            print(f"[{key}] не нашёл значение — проверь operator_match/value_col_match для {cfg['url']}")
+            print(f"[{key}] значение не найдено")
             continue
 
         history.setdefault(key, [])
+
         last = history[key][-1] if history[key] else None
+
         if last is None or last["value"] != value:
-            history[key].append({"date": today_str, "value": value, "unit": cfg["unit"]})
+            history[key].append({
+                "date": today,
+                "value": value,
+                "unit": SOURCES[key]["unit"],
+            })
+
             changed = True
-            print(f"[{key}] новое значение: {value} {cfg['unit']}")
+
+            print(
+                f"[{key}] новое значение: "
+                f"{value} {SOURCES[key]['unit']}"
+            )
+
         else:
-            print(f"[{key}] без изменений: {value} {cfg['unit']}")
+            print(
+                f"[{key}] без изменений: "
+                f"{value} {SOURCES[key]['unit']}"
+            )
 
     if changed:
         save_history(history)
+
+        print("utilities.json обновлён")
+
+    else:
+        print("Изменений нет")
 
 
 if __name__ == "__main__":
