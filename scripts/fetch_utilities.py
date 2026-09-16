@@ -77,17 +77,27 @@ def fetch_water():
         if row is None:
             continue
 
-        text = " ".join(str(x) for x in row.tolist())
+        values = []
 
-        print(f"[water] найден оператор: {text}")
+        for value in row.tolist():
+            n = number(value)
+            if n is not None:
+                values.append(n)
 
-        # Для Apă-Canal Chișinău:
+        print(f"[water] найден оператор, числа: {values}")
+
+        # Apă-Canal Chișinău:
         # вода для бытовых потребителей = 14.03
         # канализация для бытовых потребителей = 6.63
-        if "14,03" in text and "6,63" in text:
-            result = 20.66
+        if len(values) >= 3:
+            water = values[0]
+            sewage = values[2]
 
-            print(f"[water] вода + канализация = {result} lei/m³")
+            result = round(water + sewage, 2)
+
+            print(
+                f"[water] {water} + {sewage} = {result} lei/m³"
+            )
 
             return result
 
@@ -157,6 +167,7 @@ def fetch_electricity():
 
             if "premier energy" in text:
                 premier_found = True
+                print("[electricity] найден Premier Energy")
                 continue
 
             if premier_found and "tensiune joasă" in text:
@@ -168,8 +179,11 @@ def fetch_electricity():
                     if n is not None:
                         values.append(n)
 
+                print(
+                    f"[electricity] низкое напряжение: {values}"
+                )
+
                 if values:
-                    # Premier Energy, joasă tensiune:
                     # 356 bani/kWh = 3.56 lei/kWh
                     result = round(values[0] / 100, 2)
 
