@@ -145,264 +145,238 @@ def fetch_water():
     """
     Apă-Canal Chișinău.
 
-    Ищем непосредственно текст страницы ANRE:
-    Apă-Canal Chişinău
-    14,03
-    6,63
+    Извлекает тарифы непосредственно со страницы ANRE:
+    первое число после названия оператора = вода для бытовых потребителей
+    третье число = канализация для бытовых потребителей
 
-    Результат = 20.66 lei/m³.
+    Затем складывает их.
     """
 
     html = get_html(
         SOURCES["water"]["url"]
     )
 
-    text = normalize(
-        BeautifulSoup(
-            html,
-            "html.parser",
-        ).get_text(
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    for row in soup.find_all("tr"):
+
+        text = row.get_text(
             " ",
             strip=True,
         )
-    )
 
-    print("[water] ищем Apă-Canal Chişinău")
+        normalized = normalize(text)
 
-    # Ищем конкретный оператор.
-    operator_pos = text.find(
-        "apa-canal chisinau"
-    )
+        if "apa-canal chisinau" not in normalized:
+            continue
 
-    if operator_pos == -1:
         print(
-            "[water] оператор не найден"
+            f"[water] найдена строка: {text}"
         )
-        return None
 
-    # Берём большой фрагмент после оператора.
-    fragment = text[
-        operator_pos:
-        operator_pos + 1500
-    ]
+        # Берём числа непосредственно из найденной строки.
+        numbers = re.findall(
+            r"\d+(?:[.,]\d+)?",
+            text,
+        )
+
+        values = []
+
+        for value in numbers:
+            n = number(value)
+
+            if n is not None:
+                values.append(n)
+
+        print(
+            f"[water] извлечённые числа: {values}"
+        )
+
+        # В начале строки есть номер оператора "1".
+        # Поэтому после него:
+        #
+        # values[1] = тариф воды для бытовых
+        # values[2] = тариф воды второй категории
+        # values[3] = канализация для бытовых
+        #
+        # Нам нужны values[1] и values[3].
+
+        if len(values) >= 4:
+
+            water = values[1]
+            sewage = values[3]
+
+            result = round(
+                water + sewage,
+                2,
+            )
+
+            print(
+                f"[water] "
+                f"{water} + {sewage} = "
+                f"{result} lei/m³"
+            )
+
+            return result
 
     print(
-        f"[water] найден фрагмент: {fragment[:500]}"
+        "[water] оператор не найден"
     )
 
-    # Ищем именно тарифы.
-    if (
-        "14.03" not in fragment
-        or "6.63" not in fragment
-    ):
-        print(
-            "[water] 14.03 или 6.63 "
-            "не найдены"
-        )
-        return None
-
-    result = round(
-        14.03 + 6.63,
-        2,
-    )
-
-    print(
-        f"[water] 14.03 + 6.63 = "
-        f"{result} lei/m³"
-    )
-
-    return result
-
+    return None
+    
 def fetch_electricity():
     """
     Premier Energy.
     Универсальная услуга.
     Низкое напряжение.
 
-    Ищем именно секцию universal service,
-    чтобы случайно не взять тариф последней опции 371.
-
-    Нужный тариф:
-    356 bani/kWh = 3.56 lei/kWh.
+    Число извлекается непосредственно
+    из строки ANRE.
     """
 
     html = get_html(
         SOURCES["electricity"]["url"]
     )
 
-    text = normalize(
-        BeautifulSoup(
-            html,
-            "html.parser",
-        ).get_text(
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
+
+    rows = soup.find_all("tr")
+
+    in_universal_section = False
+    premier_found = False
+
+    for row in rows:
+
+        text = row.get_text(
             " ",
             strip=True,
         )
-    )
 
-    print(
-        "[electricity] анализируем страницу ANRE"
-    )
+        normalized = normalize(text)
 
-    # Начало секции универсальной услуги.
-    start_marker = (
-        "furnizarea energiei electrice "
-        "in contextul obligatiei de serviciu "
-        "public privind prestarea serviciului universal"
-    )
+        # Начало нужной секции.
+        if (
+            "furnizarea energiei electrice"
+            in normalized
+            and "serviciului universal"
+            in normalized
+        ):
 
-    # Начало следующей секции:
-    # последняя опция.
-    end_marker = (
-        "furnizarea energiei electrice "
-        "in contextul obligatiei de serviciu "
-        "public de a asigura furnizarea de ultima optiune"
-    )
+            in_universal_section = True
+            premier_found = False
 
-    start = text.find(
-        start_marker
-    )
-
-    if start == -1:
-        print(
-            "[electricity] "
-            "секция universal service не найдена"
-        )
-        return None
-
-    end = text.find(
-        end_marker,
-        start + len(start_marker),
-    )
-
-    if end == -1:
-        end = start + 3000
-
-    section = text[
-        start:end
-    ]
-
-    print(
-        "[electricity] найдена секция "
-        "universal service"
-    )
-
-    # Теперь внутри этой секции ищем
-    # именно Premier Energy.
-    premier_pos = section.find(
-        "premier energy"
-    )
-
-    if premier_pos == -1:
-        print(
-            "[electricity] "
-            "Premier Energy не найден"
-        )
-        return None
-
-    premier_section = section[
-        premier_pos:
-        premier_pos + 1500
-    ]
-
-    print(
-        f"[electricity] "
-        f"Premier Energy fragment: "
-        f"{premier_section[:700]}"
-    )
-
-    # Ищем строку низкого напряжения.
-    low_voltage_pos = premier_section.find(
-        "tensiune joasa"
-    )
-
-    if low_voltage_pos == -1:
-        print(
-            "[electricity] "
-            "tensiune joasa не найдено"
-        )
-        return None
-
-    low_voltage_section = premier_section[
-        low_voltage_pos:
-        low_voltage_pos + 500
-    ]
-
-    print(
-        f"[electricity] "
-        f"low voltage fragment: "
-        f"{low_voltage_section[:300]}"
-    )
-
-    # В актуальной таблице ANRE:
-    #
-    # tensiune joasă | 356 | 375 | 294
-    #
-    # Нас интересует 356.
-    match = re.search(
-        r"tensiune\s+joasa.{0,150}?\b356\b",
-        low_voltage_section,
-    )
-
-    if not match:
-        print(
-            "[electricity] "
-            "356 bani/kWh не найден"
-        )
-        return None
-
-    result = 3.56
-
-    print(
-        f"[electricity] "
-        f"356 bani/kWh = "
-        f"{result} lei/kWh"
-    )
-
-    return result
-
-
-def fetch_generic(cfg):
-
-    tables = pd.read_html(
-        cfg["url"]
-    )
-
-    for table in tables:
-
-        table_str = table.astype(str)
-
-        mask = table_str.apply(
-            lambda col: col.str.contains(
-                cfg["operator_match"],
-                na=False,
-                regex=False,
+            print(
+                "[electricity] "
+                "найдена секция универсальной услуги"
             )
-        )
 
-        if not mask.any().any():
             continue
 
-        row_indices = mask.any(axis=1)
+        # Следующая секция — последняя опция.
+        # После неё нам искать уже не нужно.
+        if (
+            in_universal_section
+            and "ultima optiune"
+            in normalized
+        ):
 
-        for row_idx in table.index[
-            row_indices
-        ]:
+            print(
+                "[electricity] "
+                "достигнута секция последней опции"
+            )
 
-            row = table.loc[row_idx]
+            break
 
-            for col_name, value in row.items():
+        if not in_universal_section:
+            continue
 
-                if (
-                    cfg["value_col_match"].lower()
-                    not in str(col_name).lower()
-                ):
+        # Наш оператор.
+        if (
+            "premier energy"
+            in normalized
+        ):
+
+            premier_found = True
+
+            print(
+                "[electricity] "
+                "найден Premier Energy"
+            )
+
+            # В некоторых структурах название оператора
+            # может находиться в той же строке,
+            # что и тариф.
+            if "tensiune joasa" in normalized:
+
+                match = re.search(
+                    r"tensiune\s+joasa\s+([0-9]+(?:[.,][0-9]+)?)",
+                    normalized,
+                )
+
+                if match:
+
+                    bani = number(
+                        match.group(1)
+                    )
+
+                    result = round(
+                        bani / 100,
+                        2,
+                    )
+
+                    print(
+                        f"[electricity] "
+                        f"извлечено: {bani} bani/kWh"
+                    )
+
+                    return result
+
+            continue
+
+        if not premier_found:
+            continue
+
+        # Ищем именно низкое напряжение
+        # после Premier Energy.
+        if "tensiune joasa" in normalized:
+
+            match = re.search(
+                r"tensiune\s+joasa\s+([0-9]+(?:[.,][0-9]+)?)",
+                normalized,
+            )
+
+            if match:
+
+                bani = number(
+                    match.group(1)
+                )
+
+                if bani is None:
                     continue
 
-                result = number(value)
+                result = round(
+                    bani / 100,
+                    2,
+                )
 
-                if result is not None:
-                    return result
+                print(
+                    f"[electricity] "
+                    f"извлечено: {bani} bani/kWh"
+                )
+
+                return result
+
+    print(
+        "[electricity] "
+        "нужный тариф не найден"
+    )
 
     return None
 
