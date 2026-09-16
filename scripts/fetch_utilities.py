@@ -118,12 +118,11 @@ def fetch_water():
     """
     Apă-Canal Chişinău.
 
-    Для бытовых потребителей:
+    Бытовые потребители:
     вода = 14.03 lei/m³
     канализация = 6.63 lei/m³
 
-    Итог:
-    20.66 lei/m³
+    Итого = 20.66 lei/m³
     """
 
     tables = pd.read_html(SOURCES["water"]["url"])
@@ -147,21 +146,24 @@ def fetch_water():
                 values.append(n)
 
         print(
-            f"[water] найден Apă-Canal Chişinău, "
-            f"числа: {values}"
+            f"[water] найден оператор, числа: {values}"
         )
 
-        # Для текущей таблицы ANRE:
-        # 14.03 = вода для бытовых потребителей
-        # 6.63  = канализация для бытовых потребителей
+        # Реальная структура строки ANRE:
+        # 1 = номер строки
+        # 14.03 = вода
+        # 14.03 = технологическая вода
+        # 6.63 = канализация для бытовых потребителей
+        # 10.16 = канализация для небытовых
         #
-        # Между ними присутствуют другие тарифные значения,
-        # поэтому берём первый и третий числовые значения.
+        # Поэтому:
+        # values[1] = 14.03
+        # values[3] = 6.63
 
-        if len(values) >= 3:
+        if len(values) >= 4:
 
-            water = values[0]
-            sewage = values[2]
+            water = values[1]
+            sewage = values[3]
 
             result = round(
                 water + sewage,
@@ -186,9 +188,8 @@ def fetch_electricity():
     Premier Energy, универсальная услуга,
     низкое напряжение.
 
-    ANRE:
-    356 bani/kWh без НДС
-    = 3.56 lei/kWh без НДС.
+    Тариф:
+    356 bani/kWh = 3.56 lei/kWh без НДС.
     """
 
     tables = pd.read_html(
@@ -197,97 +198,104 @@ def fetch_electricity():
 
     for table in tables:
 
-        # Превращаем всю таблицу в последовательность строк.
-        rows = []
+        print(
+            f"[electricity] проверяем таблицу "
+            f"{table.shape}"
+        )
 
-        for _, row in table.iterrows():
+        # Ищем строку с Premier Energy.
+        premier_index = None
 
-            values = [
+        for index, row in table.iterrows():
+
+            text = " ".join(
                 str(value)
                 for value in row.tolist()
-            ]
+            ).lower()
 
-            text = " ".join(values).strip()
+            if (
+                "premier energy" in text
+                and "tensiune" not in text
+            ):
+                premier_index = index
 
-            rows.append(text)
+                print(
+                    f"[electricity] найден Premier Energy: "
+                    f"{text}"
+                )
 
-        # Ищем именно блок универсальной услуги.
-        for i, text in enumerate(rows):
+                break
+
+        if premier_index is None:
+            continue
+
+        # Получаем позицию строки Premier Energy.
+        row_positions = list(table.index)
+
+        try:
+            start = row_positions.index(
+                premier_index
+            )
+        except ValueError:
+            continue
+
+        # Ищем следующие строки после Premier Energy.
+        for position in row_positions[start + 1:]:
+
+            row = table.loc[position]
+
+            text = " ".join(
+                str(value)
+                for value in row.tolist()
+            )
 
             text_lower = text.lower()
 
-            if (
-                "premier energy" in text_lower
-                and "furnizarea" not in text_lower
-            ):
-                print(
-                    "[electricity] найден Premier Energy"
-                )
+            if "tensiune joasă" not in text_lower:
+                continue
 
-                # После строки Premier Energy идут:
-                # tensiune înaltă
-                # tensiune medie
-                # tensiune joasă
-                #
-                # Нас интересует именно последняя.
+            print(
+                f"[electricity] найдена строка "
+                f"tensiune joasă: {text}"
+            )
 
-                for j in range(i + 1, min(i + 10, len(rows))):
+            values = []
 
-                    next_text = rows[j]
-                    next_lower = next_text.lower()
+            for value in row.tolist():
 
-                    if "tensiune joasă" not in next_lower:
-                        continue
+                n = number(value)
 
-                    print(
-                        "[electricity] найдена строка "
-                        "tensiune joasă:"
-                    )
-                    print(
-                        f"[electricity] {next_text}"
-                    )
+                if n is not None:
+                    values.append(n)
 
-                    # Из строки вытаскиваем все числа.
-                    values = []
+            print(
+                f"[electricity] числа: {values}"
+            )
 
-                    for part in re.findall(
-                        r"\d+(?:[.,]\d+)?",
-                        next_text,
-                    ):
-                        n = number(part)
+            if not values:
+                continue
 
-                        if n is not None:
-                            values.append(n)
+            # В строке может быть:
+            # 356 = обычный тариф
+            # 375 = дневной тариф
+            # 294 = ночной тариф
+            #
+            # Берём первый тариф.
 
-                    print(
-                        f"[electricity] числа: {values}"
-                    )
+            bani = values[0]
 
-                    if values:
+            result = round(
+                bani / 100,
+                2,
+            )
 
-                        # Первый тариф — обычная цена.
-                        #
-                        # Например:
-                        # 356 375 294
-                        #
-                        # 356 = обычный тариф
-                        # 375 = дневной/почасовой
-                        # 294 = ночной/почасовой
+            print(
+                f"[electricity] "
+                f"{bani} bani/kWh = "
+                f"{result} lei/kWh"
+            )
 
-                        bani = values[0]
-
-                        result = round(
-                            bani / 100,
-                            2,
-                        )
-
-                        print(
-                            f"[electricity] "
-                            f"{bani} bani/kWh = "
-                            f"{result} lei/kWh"
-                        )
-
-                        return result
+            return result
 
     print(
         "[electricity] значение не найдено"
