@@ -1,73 +1,122 @@
 #!/usr/bin/env python3
-"""
-Тянет ежедневные цены-потолок на Бензин A-95 и Дизель со страницы
-"Pagina consumatorului" ANRE и дописывает точку в data/fuel.json.
-
-Источник подтверждён вручную: на https://anre.md/bpagina-consumatoruluib-3-36
-есть таблица "Prețul maxim de referință" с колонками
-Produse petroliere | Prețul maxim de comercializare | ...
-"""
+"""Fetch ANRE daily maximum reference retail prices for gasoline and diesel."""
 import json
 import os
 import re
 import sys
 from datetime import date
+
 import requests
 from bs4 import BeautifulSoup
 
 URL = "https://anre.md/bpagina-consumatoruluib-3-36"
 DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "fuel.json")
-PRODUCTS = {"benzina95": "Benzin", "diesel": "Motorin"}  # без диакритики — надёжнее матчить
+PRODUCTS = {
+    "benzina95": "benzin",
+    "diesel": "motorin",
+}
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+
+def price_from_cell(text):
+    match = re.search(r"\d{1,3}(?:[ .]\d{3})*,\d{2}|\d{1,3},\d{2}", text)
+    if not match:
+        return None
+    return float(match.group(0).replace(" ", "").replace(".", "").replace(",", "."))
 
 
 def fetch_prices():
-    resp = requests.get(URL, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    response = requests.get(URL, timeout=30, headers=HEADERS)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
 
     prices = {}
-    for tr in soup.find_all("tr"):
-        text = tr.get_text(" ", strip=True)
-        for key, needle in PRODUCTS.items():
-            if key in prices:
+    applicable_date = None
+
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        if not rows:
+            continue
+
+        headers = [cell.get_text(" ", strip=True).lower() for cell in rows[0].find_all(["th", "td"])]
+        price_index = next(
+            (i for i, header in enumerate(headers) if "prețul maxim de comercializare" in header or "pretul maxim de comercializare" in header),
+            None,
+        )
+        if price_index is None:
+            continue
+
+        for row in rows[1:]:
+            cells = row.find_all(["td", "th"])
+            if len(cells) <= price_index:
                 continue
-            if needle.lower() in text.lower():
-                m = re.search(r"\d{1,3},\d{2}", text)
-                if m:
-                    prices[key] = float(m.group().replace(",", "."))
-    return prices
+            product = cells[0].get_text(" ", strip=True).lower()
+            for key, needle in PRODUCTS.items():
+                if key in prices or needle not in product:
+                    continue
+                value = price_from_cell(cells[price_index].get_text(" ", strip=True))
+                if value is not None:
+                    prices[key] = value
+
+    # ANRE's page can change the table structure. Fall back to row-level
+    # semantic matching, but still use the exact max-retail-price column when
+    # it is present in the row.
+    if len(prices) < len(PRODUCTS):
+        for row in soup.find_all("tr"):
+            cells = row.find_all(["td", "th"])
+            if len(cells) < 2:
+                continue
+            product = cells[0].get_text(" ", strip=True).lower()
+            for key, needle in PRODUCTS.items():
+                if key in prices or needle not in product:
+                    continue
+                for cell in cells[1:]:
+                    value = price_from_cell(cell.get_text(" ", strip=True))
+                    if value is not None:
+                        prices[key] = value
+                        break
+
+    # The page describes the price applicable to the following date.
+    text = soup.get_text(" ", strip=True)
+    date_match = re.search(r"(?:pentru|pentru data de)\s+(\d{1,2})[./-](\d{1,2})[./-](\d{4})", text, re.I)
+    if date_match:
+        day, month, year = date_match.groups()
+        applicable_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+
+    return prices, applicable_date
 
 
 def load_history():
     if os.path.exists(DATA_PATH):
-        with open(DATA_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {k: [] for k in PRODUCTS}
+        with open(DATA_PATH, "r", encoding="utf-8") as file:
+            return json.load(file)
+    return {key: [] for key in PRODUCTS}
 
 
 def save_history(history):
     os.makedirs(os.path.dirname(DATA_PATH), exist_ok=True)
-    with open(DATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+    with open(DATA_PATH, "w", encoding="utf-8") as file:
+        json.dump(history, file, ensure_ascii=False, indent=2)
 
 
 def main():
-    prices = fetch_prices()
+    prices, applicable_date = fetch_prices()
     if not prices:
-        print("Не удалось распознать цены на топливо — возможно, ANRE поменяла вёрстку страницы")
+        print("ANRE fuel prices could not be parsed")
         sys.exit(1)
 
     history = load_history()
-    today_str = date.today().isoformat()
+    entry_date = applicable_date or date.today().isoformat()
     for key, value in prices.items():
         history.setdefault(key, [])
-        if history[key] and history[key][-1]["date"] == today_str:
-            history[key][-1]["value"] = value
-        else:
-            history[key].append({"date": today_str, "value": value})
+        entry = {"date": entry_date, "value": value}
+        if history[key] and history[key][-1]["date"] == entry_date:
+            history[key][-1] = entry
+        elif not history[key] or history[key][-1]["value"] != value:
+            history[key].append(entry)
 
     save_history(history)
-    print(f"OK: {prices}")
+    print(f"OK: {prices}; applicable date: {entry_date}")
 
 
 if __name__ == "__main__":
