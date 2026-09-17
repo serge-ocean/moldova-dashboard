@@ -225,42 +225,44 @@ def save_history(history):
         json.dump(history, file, ensure_ascii=False, indent=2)
 
 
+def update_history(history, key, value, today):
+    config = SOURCES[key]
+    history.setdefault(key, [])
+    last = history[key][-1] if history[key] else None
+
+    if last is None or last["value"] != value:
+        history[key].append({"date": today, "value": value, "unit": config["unit"]})
+        print(f"[{key}] new consumer price: {value} {config['unit']} (VAT included)")
+        return True
+
+    print(f"[{key}] unchanged: {value} {config['unit']} (VAT included)")
+    return False
+
+
 def main():
-    fetchers = {
-        "water": lambda: fetch_water()["water"] if fetch_water() else None,
-        "sewage": lambda: fetch_water()["sewage"] if fetch_water() else None,
-        "heating": fetch_heating,
-        "gas": fetch_gas,
-        "electricity": fetch_electricity,
-    }
     history = load_history()
     changed = False
 
     from datetime import date
     today = date.today().isoformat()
 
-    # Fetch water and sewerage once, since both values come from the same ANRE table.
-    water_data = fetch_water()
+    print("[water/sewage] fetching from ANRE...")
+    try:
+        water_data = fetch_water()
+    except Exception as error:
+        print(f"[water/sewage] ERROR: {error}")
+        water_data = None
+
     if water_data:
         for key in ("water", "sewage"):
-            value = water_data[key]
-            config = SOURCES[key]
-            history.setdefault(key, [])
-            last = history[key][-1] if history[key] else None
-            if last is None or last["value"] != value:
-                history[key].append({"date": today, "value": value, "unit": config["unit"]})
-                changed = True
-                print(f"[{key}] new consumer price: {value} {config['unit']} (VAT included)")
-            else:
-                print(f"[{key}] unchanged: {value} {config['unit']} (VAT included)")
+            changed = update_history(history, key, water_data[key], today) or changed
     else:
         print("[water/sewage] tariff not found; keeping previous data")
 
     for key in ("heating", "gas", "electricity"):
-        config = SOURCES[key]
         print(f"[{key}] fetching from ANRE...")
         try:
-            value = fetchers[key]()
+            value = globals()[f"fetch_{key}"]()
         except Exception as error:
             print(f"[{key}] ERROR: {error}")
             continue
@@ -269,14 +271,7 @@ def main():
             print(f"[{key}] tariff not found; keeping previous data")
             continue
 
-        history.setdefault(key, [])
-        last = history[key][-1] if history[key] else None
-        if last is None or last["value"] != value:
-            history[key].append({"date": today, "value": value, "unit": config["unit"]})
-            changed = True
-            print(f"[{key}] new consumer price: {value} {config['unit']} (VAT included)")
-        else:
-            print(f"[{key}] unchanged: {value} {config['unit']} (VAT included)")
+        changed = update_history(history, key, value, today) or changed
 
     if changed:
         save_history(history)
