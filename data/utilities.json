@@ -16,7 +16,14 @@
   "water": [
     {
       "date": "2026-09-16",
-      "value": 20.66,
+      "value": 16.84,
+      "unit": "lei/m³"
+    }
+  ],
+  "sewage": [
+    {
+      "date": "2026-09-16",
+      "value": 7.96,
       "unit": "lei/m³"
     }
   ],
