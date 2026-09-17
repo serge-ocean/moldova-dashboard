@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
+"""Fetch current regulated utility tariffs from ANRE.
 
+All numeric values are read from the live ANRE tables. The code deliberately
+contains no tariff amounts, so changes on ANRE's side are picked up
+automatically.
+"""
 import json
 import os
 import re
 import unicodedata
-from datetime import date
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 
 
-DATA_PATH = os.path.join(
-    os.path.dirname(__file__),
-    "..",
-    "data",
-    "utilities.json",
-)
-
+DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "utilities.json")
 
 SOURCES = {
     "water": {
@@ -26,14 +23,10 @@ SOURCES = {
     },
     "heating": {
         "url": "https://anre.md/energie-termica-3-247",
-        "operator_match": "Termoelectrica",
-        "value_col_match": "Gcal",
         "unit": "lei/Gcal",
     },
     "gas": {
         "url": "https://anre.md/gaze-naturale-3-205",
-        "operator_match": "Premier Energy",
-        "value_col_match": "casnici",
         "unit": "lei/m³",
     },
     "electricity": {
@@ -42,648 +35,224 @@ SOURCES = {
     },
 }
 
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"}
 
-def normalize(text):
-    """
-    Убирает регистр и диакритику:
-    Chișinău -> chisinau
-    joasă -> joasa
-    """
 
-    text = str(text).lower()
-
-    text = unicodedata.normalize(
-        "NFKD",
-        text,
-    )
-
-    text = "".join(
-        char
-        for char in text
-        if not unicodedata.combining(char)
-    )
-
-    return text
+def normalize(value):
+    text = str(value).lower()
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
 
 
 def number(value):
-    """
-    Преобразует строку/ячейку в число.
-    """
-
-    if value is None:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
-
-    if isinstance(value, (int, float)):
-
-        if pd.isna(value):
-            return None
-
-        return float(value)
-
-    text = str(value).strip()
-
+    text = str(value).replace("\xa0", " ").strip()
     if not text:
         return None
-
-    text = text.replace(
-        "\xa0",
-        " ",
-    )
-
-    text = text.replace(
-        ",",
-        ".",
-    )
-
-    match = re.search(
-        r"-?\d+(?:\.\d+)?",
-        text,
-    )
-
+    # ANRE uses both 18 798 and 14,03 / 20.66 styles.
+    text = text.replace(" ", "")
+    match = re.search(r"-?\d+(?:[.,]\d+)?", text)
     if not match:
         return None
-
     try:
-        return float(
-            match.group(0)
-        )
+        return float(match.group(0).replace(",", "."))
     except ValueError:
         return None
 
 
-def load_history():
-
-    if not os.path.exists(DATA_PATH):
-        return {}
-
-    with open(
-        DATA_PATH,
-        "r",
-        encoding="utf-8",
-    ) as f:
-
-        return json.load(f)
-
-
-def save_history(history):
-
-    os.makedirs(
-        os.path.dirname(DATA_PATH),
-        exist_ok=True,
-    )
-
-    with open(
-        DATA_PATH,
-        "w",
-        encoding="utf-8",
-    ) as f:
-
-        json.dump(
-            history,
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-
-def get_html(url):
-
-    response = requests.get(
-        url,
-        timeout=30,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "Chrome/140 Safari/537.36"
-            )
-        },
-    )
-
+def get_tables(url):
+    response = requests.get(url, timeout=30, headers=HEADERS)
     response.raise_for_status()
+    return pd.read_html(response.text)
 
-    return response.text
+
+def flatten_column(column):
+    if isinstance(column, tuple):
+        return " ".join(str(part) for part in column if str(part).lower() != "nan")
+    return str(column)
+
+
+def find_row(table, predicate):
+    for index in table.index:
+        row_text = " ".join(normalize(value) for value in table.loc[index].tolist())
+        if predicate(row_text):
+            return table.loc[index]
+    return None
+
+
+def value_from_column(row, column):
+    return number(row[column])
 
 
 def fetch_water():
-    """
-    Извлекает тарифы Apă-Canal Chișinău
-    непосредственно из таблицы ANRE.
-
-    В строке оператора находятся тарифы:
-
-    - вода для бытовых потребителей;
-    - вода для других категорий;
-    - канализация для бытовых потребителей;
-    - канализация для небытовых потребителей;
-    - другие тарифы.
-
-    Берём первый и третий тарифных показателя.
-    Никаких конкретных значений в коде нет.
-    """
-
-    html = get_html(
-        SOURCES["water"]["url"]
-    )
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
-
-    for row in soup.find_all("tr"):
-
-        text = row.get_text(
-            " ",
-            strip=True,
-        )
-
-        normalized = normalize(text)
-
-        if (
-            "apa-canal chisinau"
-            not in normalized
-        ):
+    """Apă-Canal Chișinău: household drinking water + household sewerage."""
+    for table in get_tables(SOURCES["water"]["url"]):
+        columns = {column: normalize(flatten_column(column)) for column in table.columns}
+        row = find_row(table, lambda text: "apa-canal chisinau" in text)
+        if row is None:
             continue
 
-        print(
-            "[water] найден оператор:"
+        water_col = next(
+            (col for col, name in columns.items()
+             if "alimentare cu apa" in name and "consumatori casnici" in name),
+            None,
+        )
+        sewage_col = next(
+            (col for col, name in columns.items()
+             if "canalizare" in name and "consumatori casnici" in name),
+            None,
         )
 
-        print(text)
+        if water_col is None or sewage_col is None:
+            continue
 
-        # Сначала получаем содержимое
-        # отдельных ячеек.
-        cells = row.find_all(
-            ["td", "th"]
+        water = value_from_column(row, water_col)
+        sewage = value_from_column(row, sewage_col)
+        if water is None or sewage is None:
+            continue
+
+        return round(water + sewage, 2)
+
+    return None
+
+
+def fetch_heating():
+    """Termoelectrica tariff in lei/Gcal, without VAT."""
+    for table in get_tables(SOURCES["heating"]["url"]):
+        columns = {column: normalize(flatten_column(column)) for column in table.columns}
+        row = find_row(table, lambda text: "termoelectrica" in text)
+        if row is None:
+            continue
+
+        tariff_col = next(
+            (col for col, name in columns.items() if "lei/gcal" in name),
+            None,
         )
+        if tariff_col is None:
+            continue
 
-        numeric_values = []
+        value = value_from_column(row, tariff_col)
+        if value is not None:
+            return value
 
-        for cell in cells:
+    return None
 
-            cell_text = cell.get_text(
-                " ",
-                strip=True,
-            )
 
-            value = number(
-                cell_text
-            )
+def fetch_gas():
+    """Energocom low-pressure regulated gas price, without VAT."""
+    for table in get_tables(SOURCES["gas"]["url"]):
+        columns = {column: normalize(flatten_column(column)) for column in table.columns}
+        row = find_row(table, lambda text: "energocom" in text)
+        if row is None:
+            continue
 
-            if value is not None:
-                numeric_values.append(
-                    value
-                )
-
-        print(
-            f"[water] числа из ячеек: "
-            f"{numeric_values}"
+        low_pressure_col = next(
+            (col for col, name in columns.items() if "joasa presiune" in name),
+            None,
         )
+        if low_pressure_col is None:
+            continue
 
-        # Первая цифра обычно является
-        # номером строки (1).
-        #
-        # После неё идут тарифы.
-        #
-        # Поэтому отбрасываем целочисленный
-        # номер строки, если он присутствует.
-
-        tariff_values = [
-            value
-            for value in numeric_values
-            if value != int(value)
-        ]
-
-        print(
-            f"[water] тарифные значения: "
-            f"{tariff_values}"
-        )
-
-        if len(tariff_values) >= 3:
-
-            water = tariff_values[0]
-            sewage = tariff_values[2]
-
-            result = round(
-                water + sewage,
-                2,
-            )
-
-            print(
-                f"[water] "
-                f"{water} + {sewage} = "
-                f"{result} lei/m³"
-            )
-
-            return result
-
-        print(
-            "[water] недостаточно "
-            "тарифных значений"
-        )
-
-    print(
-        "[water] оператор не найден"
-    )
+        value_per_1000m3 = value_from_column(row, low_pressure_col)
+        if value_per_1000m3 is not None:
+            return round(value_per_1000m3 / 1000, 3)
 
     return None
 
 
 def fetch_electricity():
-    """
-    Premier Energy.
+    """Premier Energy universal-service tariff, low voltage, without VAT."""
+    for table in get_tables(SOURCES["electricity"]["url"]):
+        columns = {column: normalize(flatten_column(column)) for column in table.columns}
 
-    Ищем именно секцию:
+        for index in table.index:
+            row = table.loc[index]
+            row_text = " ".join(normalize(value) for value in row.tolist())
+            if "premier energy" not in row_text or "tensiune joasa" not in row_text:
+                continue
 
-    Furnizarea energiei electrice...
-    privind prestarea serviciului universal
-
-    Затем:
-    Premier Energy
-    -> tensiune joasă
-
-    Из строки tensiune joasă
-    извлекаем первый тариф.
-
-    Никакого 356 в коде нет.
-    """
-
-    html = get_html(
-        SOURCES["electricity"]["url"]
-    )
-
-    soup = BeautifulSoup(
-        html,
-        "html.parser",
-    )
-
-    rows = soup.find_all("tr")
-
-    in_universal_section = False
-    premier_found = False
-
-    for row in rows:
-
-        text = row.get_text(
-            " ",
-            strip=True,
-        )
-
-        normalized = normalize(
-            text
-        )
-
-        # Находим начало секции
-        # универсальной услуги.
-        if (
-            "furnizarea energiei electrice"
-            in normalized
-            and "serviciului universal"
-            in normalized
-        ):
-
-            in_universal_section = True
-            premier_found = False
-
-            print(
-                "[electricity] "
-                "найдена секция "
-                "универсальной услуги"
+            # Prefer the explicit regulated-price column. Avoid grabbing
+            # unrelated numbers such as voltage levels or decision numbers.
+            tariff_col = next(
+                (col for col, name in columns.items()
+                 if "tarif/pret reglementat" in name and "fara tva" in name),
+                None,
             )
-
-            continue
-
-        # Дошли до секции
-        # последней опции.
-        if (
-            in_universal_section
-            and "ultima optiune"
-            in normalized
-        ):
-
-            print(
-                "[electricity] "
-                "достигнут конец "
-                "нужной секции"
-            )
-
-            break
-
-        if not in_universal_section:
-            continue
-
-        # Нашли Premier Energy.
-        if (
-            "premier energy"
-            in normalized
-        ):
-
-            premier_found = True
-
-            print(
-                "[electricity] "
-                "найден Premier Energy"
-            )
-
-            # Иногда название оператора
-            # и тарифная строка находятся
-            # в одной строке.
-            if (
-                "tensiune joasa"
-                in normalized
-            ):
-
-                values = []
-
-                for cell in row.find_all(
-                    ["td", "th"]
-                ):
-
-                    value = number(
-                        cell.get_text(
-                            " ",
-                            strip=True,
-                        )
-                    )
-
-                    if value is not None:
-                        values.append(value)
-
-                if values:
-
-                    bani = values[0]
-
-                    result = round(
-                        bani / 100,
-                        2,
-                    )
-
-                    print(
-                        f"[electricity] "
-                        f"извлечено: "
-                        f"{bani} bani/kWh"
-                    )
-
-                    return result
-
-            continue
-
-        if not premier_found:
-            continue
-
-        # Ищем строку:
-        # tensiune joasă
-        if (
-            "tensiune joasa"
-            not in normalized
-        ):
-            continue
-
-        print(
-            "[electricity] "
-            f"найдена строка: {text}"
-        )
-
-        values = []
-
-        # Берём числа из отдельных
-        # ячеек таблицы.
-        for cell in row.find_all(
-            ["td", "th"]
-        ):
-
-            value = number(
-                cell.get_text(
-                    " ",
-                    strip=True,
+            if tariff_col is None:
+                # Some ANRE table versions put the tariff heading in a
+                # MultiIndex level that flattens differently.
+                tariff_col = next(
+                    (col for col, name in columns.items() if "reglementat" in name and "fara tva" in name),
+                    None,
                 )
-            )
+            if tariff_col is None:
+                continue
 
-            if value is not None:
-                values.append(value)
-
-        print(
-            f"[electricity] "
-            f"числа строки: {values}"
-        )
-
-        if not values:
-            continue
-
-        # Первый тариф — основной
-        # регулируемый тариф.
-        bani = values[0]
-
-        result = round(
-            bani / 100,
-            2,
-        )
-
-        print(
-            f"[electricity] "
-            f"{bani} bani/kWh = "
-            f"{result} lei/kWh"
-        )
-
-        return result
-
-    print(
-        "[electricity] "
-        "нужный тариф не найден"
-    )
+            bani = value_from_column(row, tariff_col)
+            if bani is not None:
+                return round(bani / 100, 2)
 
     return None
 
 
-def fetch_generic(cfg):
-    """
-    Общий парсер для отопления и газа.
-    """
-
-    tables = pd.read_html(
-        cfg["url"]
-    )
-
-    for table in tables:
-
-        table_str = table.astype(
-            str
-        )
-
-        mask = table_str.apply(
-            lambda column: column.str.contains(
-                cfg["operator_match"],
-                na=False,
-                regex=False,
-            )
-        )
-
-        if not mask.any().any():
-            continue
-
-        row_indices = mask.any(
-            axis=1
-        )
-
-        for row_idx in table.index[
-            row_indices
-        ]:
-
-            row = table.loc[row_idx]
-
-            for col_name, value in row.items():
-
-                if (
-                    cfg["value_col_match"].lower()
-                    not in str(
-                        col_name
-                    ).lower()
-                ):
-                    continue
-
-                result = number(
-                    value
-                )
-
-                if result is not None:
-
-                    print(
-                        f"[generic] "
-                        f"{result} "
-                        f"{cfg['unit']}"
-                    )
-
-                    return result
-
-    return None
+def load_history():
+    if not os.path.exists(DATA_PATH):
+        return {}
+    with open(DATA_PATH, "r", encoding="utf-8") as file:
+        return json.load(file)
 
 
-def fetch_value(
-    key,
-    cfg,
-):
-
-    if key == "water":
-        return fetch_water()
-
-    if key == "electricity":
-        return fetch_electricity()
-
-    return fetch_generic(
-        cfg
-    )
+def save_history(history):
+    os.makedirs(os.path.dirname(DATA_PATH), exist_ok=True)
+    with open(DATA_PATH, "w", encoding="utf-8") as file:
+        json.dump(history, file, ensure_ascii=False, indent=2)
 
 
 def main():
-
+    fetchers = {
+        "water": fetch_water,
+        "heating": fetch_heating,
+        "gas": fetch_gas,
+        "electricity": fetch_electricity,
+    }
     history = load_history()
-
-    today = date.today().isoformat()
-
     changed = False
 
-    for key, cfg in SOURCES.items():
+    from datetime import date
+    today = date.today().isoformat()
 
-        print("")
-        print(
-            "=" * 60
-        )
-        print(
-            f"[{key}] начинаю поиск"
-        )
-        print(
-            "=" * 60
-        )
-
+    for key, config in SOURCES.items():
+        print(f"[{key}] fetching from ANRE...")
         try:
-
-            value = fetch_value(
-                key,
-                cfg,
-            )
-
+            value = fetchers[key]()
         except Exception as error:
-
-            print(
-                f"[{key}] ОШИБКА: "
-                f"{error}"
-            )
-
+            print(f"[{key}] ERROR: {error}")
             continue
 
         if value is None:
-
-            print(
-                f"[{key}] "
-                "значение не найдено"
-            )
-
+            print(f"[{key}] tariff not found; keeping previous data")
             continue
 
-        history.setdefault(
-            key,
-            [],
-        )
+        history.setdefault(key, [])
+        last = history[key][-1] if history[key] else None
 
-        last = (
-            history[key][-1]
-            if history[key]
-            else None
-        )
-
-        if (
-            last is None
-            or last["value"] != value
-        ):
-
-            history[key].append(
-                {
-                    "date": today,
-                    "value": value,
-                    "unit": cfg["unit"],
-                }
-            )
-
+        if last is None or last["value"] != value:
+            history[key].append({
+                "date": today,
+                "value": value,
+                "unit": config["unit"],
+            })
             changed = True
-
-            print(
-                f"[{key}] "
-                f"новое значение: "
-                f"{value} "
-                f"{cfg['unit']}"
-            )
-
+            print(f"[{key}] new value: {value} {config['unit']}")
         else:
-
-            print(
-                f"[{key}] "
-                f"без изменений: "
-                f"{value} "
-                f"{cfg['unit']}"
-            )
+            print(f"[{key}] unchanged: {value} {config['unit']}")
 
     if changed:
-
-        save_history(
-            history
-        )
-
-        print("")
-        print(
-            "[OK] utilities.json "
-            "обновлён"
-        )
-
+        save_history(history)
+        print("[OK] utilities.json updated")
     else:
-
-        print("")
-        print(
-            "[INFO] новых изменений "
-            "нет"
-        )
+        print("[INFO] no utility changes")
 
 
 if __name__ == "__main__":
