@@ -2,7 +2,7 @@
 """Fetch current regulated utility tariffs from ANRE.
 
 All tariff amounts are read from the live ANRE tables. The dashboard stores
-consumer-facing prices including VAT: 20% for water, heating and electricity,
+consumer-facing prices including VAT: 20% for water, sewerage, heating and electricity,
 and 8% for natural gas.
 """
 import json
@@ -18,6 +18,11 @@ DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "utilities.jso
 
 SOURCES = {
     "water": {
+        "url": "https://anre.md/alimentare-cu-apa-si-canalizare-3-283",
+        "unit": "lei/m³",
+        "vat": 0.20,
+    },
+    "sewage": {
         "url": "https://anre.md/alimentare-cu-apa-si-canalizare-3-283",
         "unit": "lei/m³",
         "vat": 0.20,
@@ -95,7 +100,7 @@ def with_vat(value, vat_rate):
 
 
 def fetch_water():
-    """Apă-Canal Chișinău: household drinking water + household sewerage."""
+    """Apă-Canal Chișinău: household drinking water and sewerage separately."""
     for table in get_tables(SOURCES["water"]["url"]):
         columns = {column: normalize(flatten_column(column)) for column in table.columns}
         row = find_row(table, lambda text: "apa-canal chisinau" in text)
@@ -121,7 +126,10 @@ def fetch_water():
         if water is None or sewage is None:
             continue
 
-        return with_vat(water + sewage, SOURCES["water"]["vat"])
+        return {
+            "water": with_vat(water, SOURCES["water"]["vat"]),
+            "sewage": with_vat(sewage, SOURCES["sewage"]["vat"]),
+        }
 
     return None
 
@@ -219,7 +227,8 @@ def save_history(history):
 
 def main():
     fetchers = {
-        "water": fetch_water,
+        "water": lambda: fetch_water()["water"] if fetch_water() else None,
+        "sewage": lambda: fetch_water()["sewage"] if fetch_water() else None,
         "heating": fetch_heating,
         "gas": fetch_gas,
         "electricity": fetch_electricity,
@@ -230,7 +239,25 @@ def main():
     from datetime import date
     today = date.today().isoformat()
 
-    for key, config in SOURCES.items():
+    # Fetch water and sewerage once, since both values come from the same ANRE table.
+    water_data = fetch_water()
+    if water_data:
+        for key in ("water", "sewage"):
+            value = water_data[key]
+            config = SOURCES[key]
+            history.setdefault(key, [])
+            last = history[key][-1] if history[key] else None
+            if last is None or last["value"] != value:
+                history[key].append({"date": today, "value": value, "unit": config["unit"]})
+                changed = True
+                print(f"[{key}] new consumer price: {value} {config['unit']} (VAT included)")
+            else:
+                print(f"[{key}] unchanged: {value} {config['unit']} (VAT included)")
+    else:
+        print("[water/sewage] tariff not found; keeping previous data")
+
+    for key in ("heating", "gas", "electricity"):
+        config = SOURCES[key]
         print(f"[{key}] fetching from ANRE...")
         try:
             value = fetchers[key]()
@@ -244,13 +271,8 @@ def main():
 
         history.setdefault(key, [])
         last = history[key][-1] if history[key] else None
-
         if last is None or last["value"] != value:
-            history[key].append({
-                "date": today,
-                "value": value,
-                "unit": config["unit"],
-            })
+            history[key].append({"date": today, "value": value, "unit": config["unit"]})
             changed = True
             print(f"[{key}] new consumer price: {value} {config['unit']} (VAT included)")
         else:
