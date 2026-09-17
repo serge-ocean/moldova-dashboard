@@ -4,17 +4,13 @@ import json
 import os
 import re
 import sys
-from datetime import date
 
 import requests
 from bs4 import BeautifulSoup
 
 URL = "https://anre.md/bpagina-consumatoruluib-3-36"
 DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "fuel.json")
-PRODUCTS = {
-    "benzina95": "benzin",
-    "diesel": "motorin",
-}
+PRODUCTS = {"benzina95": "benzin", "diesel": "motorin"}
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 
@@ -40,7 +36,9 @@ def fetch_prices():
 
         headers = [cell.get_text(" ", strip=True).lower() for cell in rows[0].find_all(["th", "td"])]
         price_index = next(
-            (i for i, header in enumerate(headers) if "prețul maxim de comercializare" in header or "pretul maxim de comercializare" in header),
+            (i for i, header in enumerate(headers)
+             if "prețul maxim de comercializare" in header
+             or "pretul maxim de comercializare" in header),
             None,
         )
         if price_index is None:
@@ -58,27 +56,19 @@ def fetch_prices():
                 if value is not None:
                     prices[key] = value
 
-    # ANRE's page can change the table structure. Fall back to row-level
-    # semantic matching, but still use the exact max-retail-price column when
-    # it is present in the row.
-    if len(prices) < len(PRODUCTS):
-        for row in soup.find_all("tr"):
-            cells = row.find_all(["td", "th"])
-            if len(cells) < 2:
-                continue
-            product = cells[0].get_text(" ", strip=True).lower()
-            for key, needle in PRODUCTS.items():
-                if key in prices or needle not in product:
-                    continue
-                for cell in cells[1:]:
-                    value = price_from_cell(cell.get_text(" ", strip=True))
-                    if value is not None:
-                        prices[key] = value
-                        break
+    if len(prices) != len(PRODUCTS):
+        missing = sorted(set(PRODUCTS) - set(prices))
+        raise RuntimeError(
+            "ANRE fuel table changed; could not identify maximum retail-price column "
+            f"for: {', '.join(missing)}"
+        )
 
-    # The page describes the price applicable to the following date.
     text = soup.get_text(" ", strip=True)
-    date_match = re.search(r"(?:pentru|pentru data de)\s+(\d{1,2})[./-](\d{1,2})[./-](\d{4})", text, re.I)
+    date_match = re.search(
+        r"(?:pentru|pentru data de)\s+(\d{1,2})[./-](\d{1,2})[./-](\d{4})",
+        text,
+        re.I,
+    )
     if date_match:
         day, month, year = date_match.groups()
         applicable_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
@@ -101,12 +91,9 @@ def save_history(history):
 
 def main():
     prices, applicable_date = fetch_prices()
-    if not prices:
-        print("ANRE fuel prices could not be parsed")
-        sys.exit(1)
-
     history = load_history()
-    entry_date = applicable_date or date.today().isoformat()
+    entry_date = applicable_date or __import__("datetime").date.today().isoformat()
+
     for key, value in prices.items():
         history.setdefault(key, [])
         entry = {"date": entry_date, "value": value}
@@ -120,4 +107,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        print(f"ERROR: {error}")
+        sys.exit(1)
