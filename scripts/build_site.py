@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the static dashboard from data/*.json."""
+"""Build the compact static dashboard from data/*.json."""
 import json
 import os
 from datetime import date
@@ -13,17 +13,10 @@ LABELS = {
     "EUR": "EUR / MDL",
     "benzina95": "Бензин A-95",
     "diesel": "Дизель",
-    "water": "Вода / канализация",
-    "heating": "Отопление (Termoelectrica)",
-    "gas": "Газ (Energocom)",
-    "electricity": "Электричество (Premier Energy)",
-}
-
-UTILITY_NOTES = {
-    "water": "Apă-Canal Chișinău · вода + канализация для бытовых потребителей",
-    "heating": "Termoelectrica · тариф ANRE без НДС",
-    "gas": "Energocom · низкое давление · тариф ANRE без НДС",
-    "electricity": "Premier Energy · низкое напряжение · универсальная услуга · без НДС",
+    "water": "Вода + канализация",
+    "heating": "Отопление",
+    "gas": "Газ",
+    "electricity": "Электричество",
 }
 
 
@@ -33,6 +26,14 @@ def load(name):
         return {}
     with open(path, "r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def format_value(value, key):
+    if key in {"USD", "EUR"}:
+        return f"{value:.4f}"
+    if key in {"heating"}:
+        return f"{value:.0f}"
+    return f"{value:.2f}"
 
 
 def trend_note(points, n=5):
@@ -57,7 +58,7 @@ def daily_block_html(key, series):
     return f'''
     <div class="card">
       <h3>{label}</h3>
-      <p class="value">{last["value"]}</p>
+      <p class="value">{format_value(last["value"], key)}</p>
       <p class="muted">на {last["date"]}</p>
       <canvas id="chart-{key}"></canvas>
       {note_html}
@@ -69,13 +70,11 @@ def util_block_html(key, entries):
     if not entries:
         return f'<div class="card"><h3>{label}</h3><p class="muted">нет данных</p></div>'
     last = entries[-1]
-    note = UTILITY_NOTES.get(key, "")
     return f'''
     <div class="card">
       <h3>{label}</h3>
-      <p class="value">{last["value"]} <span class="unit">{last.get("unit", "")}</span></p>
-      <p class="muted">данные на {last["date"]}</p>
-      <p class="muted">{note}</p>
+      <p class="value">{format_value(last["value"], key)} <span class="unit">{last.get("unit", "")}</span></p>
+      <p class="muted">на {last["date"]} · НДС включён</p>
       <canvas id="chart-{key}"></canvas>
     </div>'''
 
@@ -115,18 +114,18 @@ def main():
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
   * {{ box-sizing:border-box; }}
-  body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#111318; color:#eee; margin:0; padding:24px; }}
-  h1 {{ font-weight:600; font-size:22px; }}
-  h2 {{ color:#888; font-weight:500; margin-top:32px; font-size:15px; text-transform:uppercase; letter-spacing:.04em; }}
-  .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; }}
-  .card {{ background:#1b1e26; border-radius:14px; padding:16px 18px; }}
-  .card h3 {{ margin:0 0 6px; font-size:14px; color:#9aa; font-weight:500; }}
-  .value {{ font-size:26px; font-weight:700; margin:2px 0; }}
-  .unit {{ font-size:14px; color:#888; font-weight:400; }}
-  .muted {{ color:#777; font-size:12px; margin:0 0 3px; line-height:1.35; }}
-  .risk {{ color:#ff5c5c; font-size:12.5px; margin-top:8px; margin-bottom:0; }}
-  canvas {{ margin-top:8px; max-height:50px; }}
-  footer {{ color:#555; font-size:12px; margin-top:40px; }}
+  body {{ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#111318; color:#eee; margin:0; padding:18px; }}
+  h1 {{ font-weight:600; font-size:21px; margin:0 0 18px; }}
+  h2 {{ color:#888; font-weight:500; margin:22px 0 9px; font-size:13px; text-transform:uppercase; letter-spacing:.04em; }}
+  .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:9px; }}
+  .card {{ background:#1b1e26; border-radius:11px; padding:11px 13px; }}
+  .card h3 {{ margin:0 0 3px; font-size:13px; color:#9aa; font-weight:500; }}
+  .value {{ font-size:23px; font-weight:700; margin:1px 0; }}
+  .unit {{ font-size:12px; color:#888; font-weight:400; }}
+  .muted {{ color:#777; font-size:10.5px; margin:0; line-height:1.3; }}
+  .risk {{ color:#ff5c5c; font-size:11px; margin:5px 0 0; }}
+  canvas {{ margin-top:4px; max-height:32px; }}
+  footer {{ color:#555; font-size:10px; margin-top:22px; }}
 </style>
 </head>
 <body>
