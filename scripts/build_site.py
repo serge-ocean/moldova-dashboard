@@ -13,7 +13,8 @@ LABELS = {
     "EUR": "EUR / MDL",
     "benzina95": "Бензин A-95",
     "diesel": "Дизель",
-    "water": "Вода + канализация",
+    "water": "Вода",
+    "sewage": "Канализация",
     "heating": "Отопление",
     "gas": "Газ",
     "electricity": "Электричество",
@@ -98,7 +99,7 @@ def main():
     utilities = load("utilities")
 
     economy_keys_daily = [("USD", currency), ("EUR", currency), ("benzina95", fuel), ("diesel", fuel)]
-    jkh_keys = ["water", "heating", "gas", "electricity"]
+    jkh_keys = ["water", "sewage", "heating", "gas", "electricity"]
 
     economy_cards = "".join(daily_block_html(key, source.get(key, [])) for key, source in economy_keys_daily)
     jkh_cards = "".join(util_block_html(key, utilities.get(key, [])) for key in jkh_keys)
