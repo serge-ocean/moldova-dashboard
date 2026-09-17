@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Fetch current regulated utility tariffs from ANRE.
 
-All numeric values are read from the live ANRE tables. The code deliberately
-contains no tariff amounts, so changes on ANRE's side are picked up
-automatically.
+All tariff amounts are read from the live ANRE tables. The dashboard stores
+consumer-facing prices including VAT: 20% for water, heating and electricity,
+and 8% for natural gas.
 """
 import json
 import os
@@ -20,22 +20,28 @@ SOURCES = {
     "water": {
         "url": "https://anre.md/alimentare-cu-apa-si-canalizare-3-283",
         "unit": "lei/m³",
+        "vat": 0.20,
     },
     "heating": {
         "url": "https://anre.md/energie-termica-3-247",
         "unit": "lei/Gcal",
+        "vat": 0.20,
     },
     "gas": {
         "url": "https://anre.md/gaze-naturale-3-205",
         "unit": "lei/m³",
+        "vat": 0.08,
     },
     "electricity": {
         "url": "https://anre.md/energie-electrica-3-290",
         "unit": "lei/kWh",
+        "vat": 0.20,
     },
 }
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"
+}
 
 
 def normalize(value):
@@ -50,7 +56,6 @@ def number(value):
     text = str(value).replace("\xa0", " ").strip()
     if not text:
         return None
-    # ANRE uses both 18 798 and 14,03 / 20.66 styles.
     text = text.replace(" ", "")
     match = re.search(r"-?\d+(?:[.,]\d+)?", text)
     if not match:
@@ -85,6 +90,10 @@ def value_from_column(row, column):
     return number(row[column])
 
 
+def with_vat(value, vat_rate):
+    return round(value * (1 + vat_rate), 2)
+
+
 def fetch_water():
     """Apă-Canal Chișinău: household drinking water + household sewerage."""
     for table in get_tables(SOURCES["water"]["url"]):
@@ -112,13 +121,13 @@ def fetch_water():
         if water is None or sewage is None:
             continue
 
-        return round(water + sewage, 2)
+        return with_vat(water + sewage, SOURCES["water"]["vat"])
 
     return None
 
 
 def fetch_heating():
-    """Termoelectrica tariff in lei/Gcal, without VAT."""
+    """Termoelectrica household tariff including VAT."""
     for table in get_tables(SOURCES["heating"]["url"]):
         columns = {column: normalize(flatten_column(column)) for column in table.columns}
         row = find_row(table, lambda text: "termoelectrica" in text)
@@ -134,13 +143,13 @@ def fetch_heating():
 
         value = value_from_column(row, tariff_col)
         if value is not None:
-            return value
+            return with_vat(value, SOURCES["heating"]["vat"])
 
     return None
 
 
 def fetch_gas():
-    """Energocom low-pressure regulated gas price, without VAT."""
+    """Energocom low-pressure regulated gas price including VAT."""
     for table in get_tables(SOURCES["gas"]["url"]):
         columns = {column: normalize(flatten_column(column)) for column in table.columns}
         row = find_row(table, lambda text: "energocom" in text)
@@ -156,13 +165,14 @@ def fetch_gas():
 
         value_per_1000m3 = value_from_column(row, low_pressure_col)
         if value_per_1000m3 is not None:
-            return round(value_per_1000m3 / 1000, 3)
+            value = value_per_1000m3 / 1000
+            return with_vat(value, SOURCES["gas"]["vat"])
 
     return None
 
 
 def fetch_electricity():
-    """Premier Energy universal-service tariff, low voltage, without VAT."""
+    """Premier Energy universal-service tariff, low voltage, including VAT."""
     for table in get_tables(SOURCES["electricity"]["url"]):
         columns = {column: normalize(flatten_column(column)) for column in table.columns}
 
@@ -172,18 +182,15 @@ def fetch_electricity():
             if "premier energy" not in row_text or "tensiune joasa" not in row_text:
                 continue
 
-            # Prefer the explicit regulated-price column. Avoid grabbing
-            # unrelated numbers such as voltage levels or decision numbers.
             tariff_col = next(
                 (col for col, name in columns.items()
                  if "tarif/pret reglementat" in name and "fara tva" in name),
                 None,
             )
             if tariff_col is None:
-                # Some ANRE table versions put the tariff heading in a
-                # MultiIndex level that flattens differently.
                 tariff_col = next(
-                    (col for col, name in columns.items() if "reglementat" in name and "fara tva" in name),
+                    (col for col, name in columns.items()
+                     if "reglementat" in name and "fara tva" in name),
                     None,
                 )
             if tariff_col is None:
@@ -191,7 +198,8 @@ def fetch_electricity():
 
             bani = value_from_column(row, tariff_col)
             if bani is not None:
-                return round(bani / 100, 2)
+                value = bani / 100
+                return with_vat(value, SOURCES["electricity"]["vat"])
 
     return None
 
@@ -244,9 +252,9 @@ def main():
                 "unit": config["unit"],
             })
             changed = True
-            print(f"[{key}] new value: {value} {config['unit']}")
+            print(f"[{key}] new consumer price: {value} {config['unit']} (VAT included)")
         else:
-            print(f"[{key}] unchanged: {value} {config['unit']}")
+            print(f"[{key}] unchanged: {value} {config['unit']} (VAT included)")
 
     if changed:
         save_history(history)
